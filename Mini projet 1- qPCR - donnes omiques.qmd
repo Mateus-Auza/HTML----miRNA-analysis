@@ -1,0 +1,285 @@
+---
+title: "Mini projet 1: qPCR"
+author: "Mateus Auza Cruz"
+format: html
+toc: True
+execute:
+  #echo: false
+  error: true
+  warning: false
+  message: false
+knitr:
+  opts_chunk: 
+    tidy: styler
+    message: false
+    
+embed-resources: true
+---
+
+## Libraries used
+
+```{r}
+#| code-fold: true
+
+library(psych)
+library(FactoMineR)
+library(factoextra)
+library(ggplot2)
+library(dplyr)
+library(caret)
+```
+
+# Data import
+
+Data are imported and the Group variable is converted into a factor. The dataset is then split into Disease and Control groups.
+
+```{r}
+
+omics= read.csv("data_qPCR.csv", sep=";")
+omics$Group=factor(omics$Group)
+omics.disease= omics[omics$Group=="Disease",]
+omics.control= omics[omics$Group=="Control",]
+```
+
+# 1. Exploration of data distributions by group
+
+## Disease group
+
+```{r}
+#| fig.width: 14
+#| fig.height: 10
+
+# Disease Group
+
+par(mfrow= c(4,5))
+for (i in 3:dim(omics)[2]){
+  hist(omics.disease[,i], main=paste("Histogram of", colnames(omics.disease)[i]), freq=F, xlab=paste(colnames(omics.disease)[i])   )
+  lines(density(omics.disease[,i]), col="red")
+}
+
+```
+
+We observe that most miRNA distributions are right-skewed and that all values are positive. Therefore, the data are log-transformed.
+
+## Control group
+
+```{r}
+#| fig.width: 14
+#| fig.height: 10
+
+par(mfrow= c(4,5))
+for (i in 3:dim(omics)[2]){
+  hist(omics.control[,i], main=paste("Histogram of", colnames(omics.control)[i]), freq=F, xlab=paste(colnames(omics.control)[i])   )
+  lines(density(omics.control[,i]), col="red")
+}
+
+
+```
+
+For the same reasons as above, the data are log-transformed. Because of this transformation, zero values must be handled, as suggested in the instructions. Zero values are replaced by a small constant (0.01) before log transformation.
+
+```{r}
+omics[,3:21][omics[,3:21] == 0] <- 0.01
+log.omics=cbind(omics[,c(1,2)],log(omics[,3:21]))
+
+log.omics.disease= log.omics[log.omics$Group=="Disease",]
+log.omics.control= log.omics[log.omics$Group=="Control",]
+
+```
+
+# 2. Descriptive statistics of each miRNA by group
+
+## Disease group
+
+#### Tables
+
+Descriptive statistics (mean, median, standard deviation, etc.) are computed for each miRNA in the Disease group using log-transformed data.
+
+```{r}
+describe(log.omics.disease[,3:21])
+```
+
+#### Plots
+
+Histograms and density curves are used to visualize the distribution of log-transformed miRNA expression levels.
+
+```{r}
+#| fig.width: 14
+#| fig.height: 10
+par(mfrow= c(4,5))
+for (i in 3:ncol(log.omics.disease)) {
+  hist(log.omics.disease[, i],
+       main = paste("Histogram of log(", colnames(log.omics.disease)[i], ")"),
+       xlab = paste("log(", colnames(log.omics.disease)[i], ")"),
+       freq = FALSE)
+  
+  lines(density(log.omics.disease[, i], na.rm = TRUE),
+        col = "red")
+}
+```
+
+## Control group
+
+#### Tables
+
+Descriptive statistics are computed for each miRNA in the Control group.
+
+```{r}
+describe(log.omics.control[,3:21])
+```
+
+#### Plots
+
+Histograms and density curves are shown for the log-transformed miRNA expression levels in the Control group.
+
+```{r}
+#| fig.width: 14
+#| fig.height: 10
+par(mfrow= c(4,5))
+for (i in 3:ncol(log.omics.control)) {
+  hist(log.omics.control[, i],
+       main = paste("Histogram of log(", colnames(log.omics.control)[i], ")"),
+       xlab = paste("log(", colnames(log.omics.control)[i], ")"),
+       freq = FALSE)
+  
+  lines(density(log.omics.control[, i], na.rm = TRUE),
+        col = "red")
+}
+```
+
+# 3. Identification and removal of outliers with justification
+
+Since the distributions are approximately symmetric, outliers are detected using the z-score method with a threshold of 3.
+
+```{r}
+outlier.z = function(x, cutoff = 3) {
+  z = (x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE)
+  abs(z) > cutoff
+}
+outliers = lapply(log.omics[,3:21], outlier.z)
+
+sapply(outliers, sum)
+```
+
+We observe that miR_006_5p, miR_011_3p and miR_013_5p have the highest number of outliers (3), while the others have either 1 or no outliers. Because the data are multidimensional, removing entire subjects would not be appropriate. Instead, in order to improve the robustness of the statistical analysis, detected outlier values are replaced with NA.
+
+```{r}
+log.omics.clean = log.omics
+for (i in 3:21) {
+  log.omics.clean[outliers[[i-2]], i] = NA
+}
+head(log.omics.clean)
+```
+
+# 4. Hypothesis tests comparing the two groups for each miRNA
+
+Hypothesis testing is performed by comparing the Control and Disease groups for each miRNA using log-transformed data. The null hypothesis is that the mean expression levels are equal between the two groups.
+
+Following outlier removal, a two-sided t-test will be performed for each miRNA. Distributions were found to be sufficiently symmetric upon visual inspection to satisfy the assumption of normality without requiring further formal testing (shapiro-Wilk test or Q-Q plots).
+
+```{r}
+t.test.results =  sapply(3:21, function(i) {
+  t.test(log.omics.clean[[i]] ~ log.omics.clean$Group)$p.value
+})
+
+t.test.results
+```
+
+miRNAs with a p-value below 0.05 reject the null hypothesis, indicating a significant difference in mean expression between the Control and Disease groups.
+
+```{r}
+colnames(log.omics.clean)[which(t.test.results<0.05)+2]
+```
+
+# 5. PCA analysis and visualization of the results
+
+We first examine the scree plot in order to determine how many principal components should be retained.
+
+```{r}
+omics.pca=PCA(na.omit(log.omics.clean[,-2]), scale.unit=T, quali.sup = 1, graph=F)
+omics.colors = c(Control = "#1f77b4", Disease = "#d62728")
+
+fviz_eig(omics.pca)
+```
+
+A large drop in explained variance is observed between the second and third principal components. Therefore, only the first two principal components are retained for interpretation.
+
+```{r}
+fviz_pca_var(
+  omics.pca,
+  axes = c(1, 2),
+  col.var = "cos2",
+  gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+  repel = TRUE
+)
+```
+
+The first principal component explains approximately 39.7% of the total variance, while the second explains approximately 14%. Together, the first two components explain 53.7% of the variance. This proportion is acceptable in the context of omics data, which are typically noisy and high-dimensional.
+
+```{r}
+fviz_pca_ind(
+  omics.pca,
+  col.ind = na.omit(log.omics.clean[, -2])$Group,
+  label = "none",
+  addEllipses = TRUE,
+  legend.title = "Group"
+) +
+  coord_fixed() +
+  scale_color_manual(values = omics.colors) +
+  scale_fill_manual(values = omics.colors)
+
+```
+
+The PCA of individuals shows partial separation between control and disease samples along the first principal component. Disease samples tend to be shifted toward positive values of PC1 and show slightly greater dispersion, while substantial overlap between groups remains. This suggests limited but observable group-related structure in the data.
+
+# 6. Clustering analysis and comparison with biological groups
+
+Hierarchical clustering is performed using Ward’s method on scaled, log-transformed expression data.
+
+```{r}
+dist.omics= dist(scale(log.omics.clean[,3:21]))
+
+merge = hclust(
+  dist.omics^2 / (2 * nrow(log.omics.clean[,3:21])),
+  method = "ward.D"
+)
+plot(merge)
+
+```
+
+The resulting dendrogram is cut into two clusters, corresponding to the expected number of biological groups.
+
+Cluster assignments are compared with the known group labels (Control vs Disease) using a confusion matrix. This comparison allows us to evaluate how well the unsupervised clustering recovers the original biological grouping.
+
+```{r}
+clusters <- cutree(merge, k = 2)
+
+omics_df <- log.omics.clean |>
+  mutate(
+    hclusters = clusters,
+    group = log.omics.clean$Group   # your control/disease column
+  ) |>
+  group_by(group, hclusters) |>
+  mutate(n = n()) |>
+  arrange(hclusters, desc(n)) |>
+  group_by(hclusters) |>
+  mutate(
+    hclust_predicted_group = group[1]
+  ) |>
+  ungroup()
+
+
+confusionMatrix(
+  data = omics_df$hclust_predicted_group,
+  reference = omics_df$group
+)
+
+```
+
+# 7. Conclusion
+
+Although several miRNAs show statistically significant differences between Control and Disease groups, their overall discriminative power is limited. The classification model achieves a moderate accuracy (62.5%), only slightly above the no-information rate, with a low Kappa value (0.26), indicating weak agreement beyond chance. Sensitivity is higher for Control samples than for Disease samples, leading to frequent misclassification of affected individuals.
+
+These findings are consistent with the PCA results, which show only partial separation between groups along the first principal component and substantial overlap between Control and Disease samples. Disease samples also appear more dispersed, suggesting increased biological variability rather than a distinct cluster.
+
+Overall, despite differential expression of some miRNAs, **the results do not support the presence of robust biomarkers capable of reliably distinguishing Disease from Control individuals**, and instead point to biological heterogeneity within the Disease group.
